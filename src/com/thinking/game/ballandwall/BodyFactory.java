@@ -13,7 +13,6 @@ import org.jbox2d.common.Vec2;
 import org.jbox2d.dynamics.Body;
 import org.jbox2d.dynamics.BodyDef;
 import org.jbox2d.dynamics.BodyType;
-import org.jbox2d.dynamics.Filter;
 import org.jbox2d.dynamics.FixtureDef;
 import org.jbox2d.dynamics.World;
 import org.jbox2d.dynamics.contacts.Contact;
@@ -30,9 +29,14 @@ public class BodyFactory {
     public static final int VEL_ITER = 6;
     public static final int POS_ITER = 6;
     
+    public static final int CATEGORY_ALL = 0xffffffff;
+    public static final int CATEGORY_BALL = 0x00000001;
+    public static final int CATEGORY_WALL = 0x00000002;
+    
+    private Object mLock = new Object();
     private World mWorld;
     private List< Contact > mVecContact;
-    private Object mLock = new Object();
+    private List< Body > mVecBody;
     
     public BodyFactory() {
         Log.d( TAG, "BodyFactory.init" );
@@ -58,7 +62,7 @@ public class BodyFactory {
                     }
                     // TODO:
                     // push to contact vector
-                    List< Contact > vecContact = getContact();
+                    List< Contact > vecContact = getContactList();
                     if ( null == vecContact ) {
                         Log.e( TAG, "Failed to add contact: null vecVector" );
                         return ;
@@ -74,7 +78,7 @@ public class BodyFactory {
                     if ( bodyA.m_fixtureList.isSensor() || bodyB.m_fixtureList.isSensor() ) {
                         // TODO:
                         // push to contact vector
-                        List< Contact > vecContact = getContact();
+                        List< Contact > vecContact = getContactList();
                         if ( null == vecContact ) {
                             Log.e( TAG, "Failed to add contact: null vecVector" );
                             return ;
@@ -86,6 +90,7 @@ public class BodyFactory {
         }); // end of mWorld.setContactListener(
         
         mVecContact = new ArrayList< Contact >();
+        mVecBody = new ArrayList<Body>();
     }    
     public void release() {
         Log.d( TAG, "release" );
@@ -98,25 +103,128 @@ public class BodyFactory {
                 mVecContact.clear();
                 mVecContact = null;
             }
+            if ( mVecBody != null ) {
+                mVecBody.clear();
+                mVecBody = null;
+            }
         }
     }
     
+    // TODO:
     // public static method    
     public static float worldToScreen( float val ) {
         return val * RATE;
     }
+    
     public static float screenToWorld( float val ) {
         return val / RATE;
     }
+    
     public static float angleToDegree( float angle ) {
         return angle * DEGTORAD;
     }
+    
     public static float degreeToAngle( float degree ) {
         return degree * RADTODEG;
     }
     
+    public static Shape createCircleShape( float radius ) {
+        CircleShape shape = new CircleShape();
+        shape.m_radius = radius;        
+        return shape;
+    }
+    
+    public static Shape createPolygonShape( float halfWidth, float halfHeight ) {
+        PolygonShape shape = new PolygonShape();
+        shape.setAsBox(halfWidth, halfHeight);
+        return shape;
+    }    
+    
+    public static Body createFixturedBody( Body body, Shape shape, int categoryBits, int maskBits, boolean isSensor ) {        
+        FixtureDef fd = new FixtureDef();
+        fd.shape = shape;
+        fd.isSensor = isSensor;
+        fd.filter.categoryBits = categoryBits;
+        fd.filter.maskBits = maskBits;
+        fd.density = 1.0f;
+        fd.friction = 0.0f;
+        fd.restitution = 1.0f;
+        if ( null == body ) {
+            Log.e( TAG, "Failed to attachFixture: null body" );
+            return null;
+        }
+        body.createFixture(fd);
+        return body;
+    }
+    
+    public static Body createBody( World world, float x, float y, float angle, BodyType type ) {
+        BodyDef bd = new BodyDef();
+        bd.position.set(x, y);
+        bd.angle = angle;
+        bd.type = type;
+        if ( null == world ) {
+            Log.e( TAG, "Failed to createBody: null world" );
+            return null;
+        }
+        return world.createBody(bd);
+    }
+    
     // TODO:
     // public method
+    public List< Body > getBodyList() {
+        synchronized ( mLock ) {
+            return mVecBody;
+        }
+    }
+    private void addBody( Body body ) {
+        synchronized ( mLock ) {
+            if ( mVecBody != null && body != null ) {
+                mVecBody.add( body );
+            }
+        }
+    }
+    
+    public Body addBall( float x, float y, float radius, float angle ) {
+        Log.d( TAG, "addBall" );
+        x = BodyFactory.screenToWorld( x );
+        y = BodyFactory.screenToWorld( y );
+        radius = BodyFactory.screenToWorld( radius );
+        angle = BodyFactory.angleToDegree( angle );
+        
+        Log.v( TAG, String.format( "addBall( %.2f, %.2f, %.2f )", 
+            x, y, radius
+        ));
+        
+        Body body = BodyFactory.createFixturedBody( 
+            BodyFactory.createBody( getWorld(), x, y, angle, BodyType.DYNAMIC ), 
+            BodyFactory.createCircleShape( radius ), 
+            CATEGORY_BALL, CATEGORY_ALL, false 
+        );
+        addBody( body );
+        return body;
+    }
+    
+    public Body addWall( float x, float y, float halfWidth, float halfHeight, float angle ) {
+        Log.d( TAG, "addWall" );
+        x = BodyFactory.screenToWorld( x );
+        y = BodyFactory.screenToWorld( y );
+        halfWidth = BodyFactory.screenToWorld( halfWidth );
+        halfHeight = BodyFactory.screenToWorld( halfHeight );
+        angle = BodyFactory.angleToDegree( angle );
+        
+        Log.v( TAG, String.format( "addWall( %.2f, %.2f, %.2f, %.2f )", 
+            x, y, halfWidth, halfHeight
+        ));
+        
+        Body body = BodyFactory.createFixturedBody( 
+            BodyFactory.createBody( getWorld(), x, y, angle, BodyType.STATIC ), 
+            BodyFactory.createPolygonShape( halfWidth, halfHeight ),
+            CATEGORY_WALL, CATEGORY_ALL, false 
+        );
+        addBody( body );
+        return body;
+    }
+    
     public void setGravity( float x, float y ) {
         World world = getWorld();
         if ( null == world ) {
@@ -126,158 +234,11 @@ public class BodyFactory {
         world.setGravity( new Vec2( x, y ) );
     }
     
-    private static Shape createCircleShape( float radius ) {
-        CircleShape shape = new CircleShape();
-        shape.m_radius = radius;        
-        return shape;
-    }
-    private static Shape createPolygonShape( float halfWidth, float halfHeight ) {
-        PolygonShape shape = new PolygonShape();
-        shape.setAsBox(halfWidth, halfHeight);  
-        return shape;
-    }    
-    private static Body createFixturedBody( Body body, Shape shape, float density, float friction, float restitution ) {
-        FixtureDef fd = new FixtureDef();
-        fd.shape = shape;
-        fd.density = density;
-        fd.friction = friction;
-        fd.restitution = restitution;
-        if ( null == body ) {
-            Log.e( TAG, "Failed to attachFixture: null body" );
-            return null;
-        }
-        body.createFixture(fd);
-        return body;
-    }
-    private static Body createFixturedBody( Body body, Shape shape, float density, float friction, float restitution, Filter filter ) {        
-        FixtureDef fd = new FixtureDef();
-        fd.shape = shape;
-        fd.filter = filter;
-        fd.density = density;
-        fd.friction = friction;
-        fd.restitution = restitution;
-        if ( null == body ) {
-            Log.e( TAG, "Failed to attachFixture: null body" );
-            return null;
-        }
-        body.createFixture(fd);
-        return body;
-    }
-    private static Body createFixturedBody( Body body, Shape shape, float density, float friction, float restitution, Filter filter, boolean isSensor ) {        
-        FixtureDef fd = new FixtureDef();
-        fd.shape = shape;
-        fd.isSensor = isSensor;
-        fd.filter = filter;
-        fd.density = density;
-        fd.friction = friction;
-        fd.restitution = restitution;
-        if ( null == body ) {
-            Log.e( TAG, "Failed to attachFixture: null body" );
-            return null;
-        }
-        body.createFixture(fd);
-        return body;
-    }
-    private static Body createBody( World world, float x, float y, BodyType type ) {
-        BodyDef bd = new BodyDef();
-        bd.position.set(x, y);
-        bd.type = type;
-        if ( null == world ) {
-            Log.e( TAG, "Failed to createBody: null world" );
-            return null;
-        }
-        return world.createBody(bd);
-    }
-    
-    public Body createBall( float x, float y, float radius ) {
-        Log.d( TAG, "createBall" );
-        x = BodyFactory.screenToWorld( x );
-        y = BodyFactory.screenToWorld( y );
-        radius = BodyFactory.screenToWorld( radius );
-        
-        Log.v( TAG, String.format( "createBall( %.2f, %.2f, %.2f )", 
-            x, y, radius
-        ));
-        
-        return createFixturedBody( 
-            createBody( getWorld(), x, y, BodyType.DYNAMIC ), 
-            createCircleShape( radius ), 
-            1.0f, 0.0f, 1.0f 
-        );
-    }
-    public Body createBrick( float x, float y, float halfWidth, float halfHeight ) {
-        Log.d( TAG, "createBrick" );
-        x = BodyFactory.screenToWorld( x );
-        y = BodyFactory.screenToWorld( y );
-        halfWidth = BodyFactory.screenToWorld( halfWidth );
-        halfHeight = BodyFactory.screenToWorld( halfHeight );  
-        
-        return createFixturedBody( 
-            createBody( getWorld(), x, y, BodyType.STATIC ), 
-            createPolygonShape( halfWidth, halfHeight ), 
-            0.0f, 0.0f, 1.0f 
-        );
-    }
-
-    public Body createBounder(float x, float y, float halfWidth,
-            float halfHeight) {
-        x = BodyFactory.screenToWorld( x );
-        y = BodyFactory.screenToWorld( y );
-        halfWidth = BodyFactory.screenToWorld( halfWidth );
-        halfHeight = BodyFactory.screenToWorld( halfHeight );
-        
-        return createFixturedBody( 
-            createBody( getWorld(), x, y, BodyType.STATIC ), 
-            createPolygonShape( halfWidth, halfHeight ), 
-            0.0f, 0.0f, 1.0f 
-        );
-    }
-    
-    public Body createIron(float x, float y, float halfWidth,
-            float halfHeight) {
-        x = BodyFactory.screenToWorld( x );
-        y = BodyFactory.screenToWorld( y );
-        halfWidth = BodyFactory.screenToWorld( halfWidth );
-        halfHeight = BodyFactory.screenToWorld( halfHeight );
-        
-        return createFixturedBody( 
-            createBody( getWorld(), x, y, BodyType.STATIC ), 
-            createPolygonShape( halfWidth, halfHeight ), 
-            0.0f, 0.0f, 1.0f 
-        );
-    }
-
-    public Body createStick(float x, float y, float halfWidth,
-            float halfHeight) {
-        x = BodyFactory.screenToWorld( x );
-        y = BodyFactory.screenToWorld( y );
-        halfWidth = BodyFactory.screenToWorld( halfWidth );
-        halfHeight = BodyFactory.screenToWorld( halfHeight );
-        
-        return createFixturedBody( 
-            createBody( getWorld(), x, y, BodyType.STATIC ), 
-            createPolygonShape( halfWidth, halfHeight ), 
-            0.0f, 0.0f, 1.0f 
-        );
-    }    
-
-    public Body createBonus( float x, float y, float halfWidth, float halfHeight ) {
-        x = BodyFactory.screenToWorld( x );
-        y = BodyFactory.screenToWorld( y );
-        halfWidth = BodyFactory.screenToWorld( halfWidth );
-        halfHeight = BodyFactory.screenToWorld( halfHeight );  
-        
-        return createFixturedBody( 
-            createBody( getWorld(), x, y, BodyType.STATIC ), 
-            createPolygonShape( halfWidth, halfHeight ), 
-            0.0f, 0.0f, 1.0f 
-        );
-
-    }
-
     public void step() {
-        stepTheWorld();
-        handleContact();
+        synchronized ( mLock ) {
+            stepTheWorld_l();
+        }        
+        handleContact();        
     }
 
     public void remove( Body body ) {
@@ -291,36 +252,52 @@ public class BodyFactory {
     }
 
     // TODO:
+    // private method
     private World getWorld() {
         synchronized ( mLock ) {
             return mWorld;
         }
     }
-    private List< Contact > getContact() {
+    
+    private List< Contact > getContactList() {
         synchronized ( mLock ) {
             return mVecContact;
         } 
     }
-    private void stepTheWorld(){
-        World world = getWorld();
-        if ( null == world ) {
-            Log.e( TAG, "Failed to world.step: null world" );
-            return ;
+    private void stepTheWorld_l(){
+        if ( mWorld != null ) {
+            mWorld.step( TIME_STEP, VEL_ITER, POS_ITER );
         }
-        world.step( TIME_STEP, VEL_ITER, POS_ITER );
     }
     private void handleContact() {
-        List< Contact > vecContact = getContact();
+        List< Contact > vecContact = getContactList();
         if ( null == vecContact ) {
             Log.e( TAG, "Failed to handleContact: null vecContact" );
             return ;
         }
         for ( Contact contact: vecContact ) {
-            handleBody( contact.getFixtureA().getBody(), contact.getFixtureB().getBody() );
+            handleBodyContact( contact.getFixtureA().getBody(), contact.getFixtureB().getBody() );
+            handleBodyContact( contact.getFixtureB().getBody(), contact.getFixtureA().getBody() );
         }
-        mVecContact.clear();
+        vecContact.clear();
     }    
-    private void handleBody( Body self, Body other ) {
-        Log.v( TAG, "handleBody" );
+    private void handleBodyContact( Body self, Body other ) {
+//        Log.d( TAG, "handleBodyContact" );
+        int categoryBits = self.getFixtureList().getFilterData().categoryBits;
+        if ( ( categoryBits & CATEGORY_BALL ) != 0 ) {
+            BodyUserData userData = (BodyUserData) self.getUserData();
+            float velocityLength = userData.mVelocityLength;
+            keepVelocity( self, velocityLength );
+        }
+        else if ( ( categoryBits & CATEGORY_WALL ) != 0 ) { 
+            
+        }
+    }
+    
+    private static void keepVelocity( Body body, float velocityLength ) {        
+        float x = body.getLinearVelocity().x;
+        float y = body.getLinearVelocity().y;
+        float scale = velocityLength/body.getLinearVelocity().length();
+        body.setLinearVelocity( new Vec2( x*scale, y*scale ) );        
     }
 }
